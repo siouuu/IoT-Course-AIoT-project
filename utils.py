@@ -6,6 +6,11 @@ import numpy as np
 from sklearn import preprocessing
 import matplotlib.pyplot as plt
 import seaborn as sns
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.svm import SVC
+from sklearn.neighbors import KNeighborsClassifier
+from sklearn.metrics import classification_report, ConfusionMatrixDisplay, accuracy_score
+
 
 
 def sliding_window_pd(
@@ -234,3 +239,61 @@ def list_files_in_folder(folder_path) -> list:
                 files_list.append(f)
 
     return files_list
+
+def process_sensor_data(df, trim_size=100, z_threshold=3):
+    df_trimmed = df.iloc[:-trim_size].copy()
+    for col_name in df_trimmed.columns:
+        mean_val = df_trimmed[col_name].mean()
+        std_val = df_trimmed[col_name].std()
+        z_scores = (df_trimmed[col_name] - mean_val) / std_val
+        df_trimmed.loc[np.abs(z_scores) > z_threshold, col_name] = np.nan
+        df_trimmed[col_name] = df_trimmed[col_name].interpolate(method='linear')
+        df_trimmed[col_name] = df_trimmed[col_name].ffill().bfill()
+    return df_trimmed
+
+def extract_features(window_df):
+    features = []
+    
+    acc_cols = [c for c in window_df.columns if 'acc' in c]
+    if len(acc_cols) == 3:
+        acc_vals = window_df[acc_cols].values
+        vm = np.sqrt(np.sum(acc_vals**2, axis=1))
+        sma = np.mean(np.sum(np.abs(acc_vals), axis=1))
+        features.extend([np.mean(vm), np.std(vm), sma])
+        
+    for col in window_df.columns:
+        values = window_df[col].values
+        
+        mean_val = np.mean(values)
+        std_val = np.std(values)
+        min_val = np.min(values)
+        max_val = np.max(values)
+        median_val = np.median(values)
+        range_val = max_val - min_val
+        zcr_val = np.mean(np.diff(values > mean_val) != 0)
+        
+        features.extend([mean_val, std_val, min_val, max_val, median_val, range_val, zcr_val])
+        
+        fft_vals = np.abs(np.fft.rfft(values))
+        fft_energy = np.sum(fft_vals**2)
+        dom_freq_idx = np.argmax(fft_vals)
+        
+        psd = (fft_vals**2) / (fft_energy + 1e-9)
+        spectral_entropy = -np.sum(psd * np.log2(psd + 1e-9))
+        
+        features.extend([fft_energy, dom_freq_idx, spectral_entropy])
+        
+    return features
+
+def evaluate_models(X_tr, y_tr, X_te, y_te, le):
+    models = {
+        "RandomForest": RandomForestClassifier(random_state=42),
+        "SVM": SVC(random_state=42),
+        "KNN": KNeighborsClassifier()
+    }
+    for name, model in models.items():
+        model.fit(X_tr, y_tr)
+        y_pred = model.predict(X_te)
+        print(f"=================== {name} Classification Report ===================")
+        print(classification_report(y_te, y_pred, target_names=le.classes_, digits=4))
+        print("\n")
